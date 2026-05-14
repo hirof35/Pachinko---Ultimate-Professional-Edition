@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>Pachinko - Ultimate Professional Edition</title>
+    <style>
+        body { margin: 0; background: #0f0f0f; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; color: white; font-family: 'Meiryo', 'Hiragino Kaku Gothic ProN', sans-serif; }
+        
+        /* 筐体全体 */
+        #machine { display: flex; flex-direction: column; align-items: center; filter: drop-shadow(0 0 20px rgba(0,0,0,0.8)); }
+
+        /* パチンコ盤面 */
+        #game-box { 
+            position: relative; width: 400px; height: 500px; 
+            background: radial-gradient(circle, #222 0%, #000 100%); 
+            border: 8px solid #444; border-radius: 20px 20px 0 0; 
+            overflow: hidden; border-bottom: none;
+        }
+        canvas { position: absolute; top: 0; left: 0; z-index: 1; }
+        
+        /* 液晶エリア（盤面内部） */
+        #lcd {
+            position: absolute; top: 30px; left: 50px; width: 300px; height: 160px;
+            background: linear-gradient(180deg, #000 0%, #111 100%); 
+            border: 2px solid #555; border-radius: 10px;
+            display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 5;
+            box-shadow: inset 0 0 15px rgba(0,255,255,0.1);
+        }
+        #reels { display: flex; gap: 10px; font-size: 55px; font-weight: bold; color: #ffeb3b; text-shadow: 0 0 15px rgba(255,215,0,0.7); }
+        .stop-container { display: flex; gap: 15px; margin-top: 12px; }
+        .stop-btn { 
+            padding: 6px 14px; cursor: pointer; background: #222; color: #eee; 
+            border: 1px solid #666; border-radius: 4px; font-size: 11px; font-weight: bold;
+            transition: all 0.2s;
+        }
+        .stop-btn:enabled { background: #ff1493; border-color: #ff69b4; box-shadow: 0 0 12px #ff1493; color: white; }
+        .stop-btn:active { transform: scale(0.9); }
+
+        /* 外側の操作パネル（盤面外部） */
+        #external-ui { 
+            width: 416px; padding: 25px 0; 
+            background: linear-gradient(180deg, #333 0%, #111 100%); 
+            border-radius: 0 0 20px 20px; border: 4px solid #444; 
+            text-align: center; border-top: 2px solid #555;
+        }
+
+        .info-panel { font-size: 24px; margin-bottom: 18px; font-weight: bold; letter-spacing: 2px; }
+        #coinCount { color: #00ff00; text-shadow: 0 0 10px rgba(0,255,0,0.5); }
+
+        .control-row { display: flex; justify-content: center; align-items: center; gap: 15px; margin-bottom: 20px; }
+        input[type=range] { width: 200px; cursor: pointer; accent-color: #f44336; }
+        #powerValue { font-weight: bold; color: #ffeb3b; min-width: 40px; font-size: 18px; }
+
+        #shootBtn { 
+            padding: 16px 70px; font-size: 24px; cursor: pointer; background: #f44336; color: white; 
+            border: none; border-radius: 50px; box-shadow: 0 6px #b71c1c; font-weight: bold; 
+            transition: 0.1s; text-transform: uppercase;
+        }
+        #shootBtn:active { transform: translateY(4px); box-shadow: 0 2px #b71c1c; }
+
+        .sys-row { margin-top: 25px; display: flex; justify-content: center; gap: 25px; }
+        .sys-btn { 
+            padding: 8px 18px; font-size: 12px; cursor: pointer; background: #444; color: #ccc; 
+            border: 1px solid #555; border-radius: 6px; transition: 0.2s;
+        }
+        .sys-btn:hover { background: #666; color: white; }
+
+        /* 当たり演出 */
+        .win-flash { animation: flash 0.1s infinite; }
+        @keyframes flash { 50% { background: #444; } }
+    </style>
+</head>
+<body>
+
+<div id="machine">
+    <!-- 盤面エリア -->
+    <div id="game-box">
+        <div id="lcd">
+            <div id="reels"><span id="r1">7</span><span id="r2">7</span><span id="r3">7</span></div>
+            <div class="stop-container">
+                <button class="stop-btn" id="stop1" disabled>STOP</button>
+                <button class="stop-btn" id="stop2" disabled>STOP</button>
+                <button class="stop-btn" id="stop3" disabled>STOP</button>
+            </div>
+            <div id="status" style="font-size: 14px; margin-top: 8px; color: #0f0; font-weight: bold;">READY</div>
+        </div>
+        <canvas id="gameCanvas"></canvas>
+    </div>
+
+    <!-- 外側の操作パネル -->
+    <div id="external-ui">
+        <div class="info-panel">HOLD: <span id="coinCount">1000</span></div>
+        
+        <div class="control-row">
+            <span style="font-size: 12px;">SOFT</span>
+            <input type="range" id="powerRange" min="15" max="38" value="23.0" step="0.1">
+            <span style="font-size: 12px;">HARD</span>
+            <span id="powerValue">23.0</span>
+        </div>
+
+        <button id="shootBtn">打ち出し / SHOOT</button>
+
+        <div class="sys-row">
+            <button id="saveBtn" class="sys-btn">DATA SAVE</button>
+            <button id="resetBtn" class="sys-btn">DATA RESET</button>
+        </div>
+    </div>
+</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+canvas.width = 400;
+canvas.height = 500;
+
+// --- データ管理 ---
+let coins = 1000;
+const SAVE_KEY = "pachinko_ultimate_save_data";
+
+function loadData() {
+    const saved = localStorage.getItem(SAVE_KEY);
+    if (saved) {
+        coins = JSON.parse(saved).coins;
+    }
+    updateUI();
+}
+
+function saveData() {
+    localStorage.setItem(SAVE_KEY, JSON.stringify({ coins: coins }));
+    alert("玉数をセーブしました！");
+}
+
+function resetData() {
+    if (confirm("データをリセットして1000発に戻しますか？")) {
+        localStorage.removeItem(SAVE_KEY);
+        location.reload();
+    }
+}
+
+function updateUI() {
+    document.getElementById('coinCount').innerText = coins;
+}
+
+// --- ゲーム変数 ---
+let balls = [];
+const pins = [];
+const hole = { x: 200, y: 440, r: 25 }; // 入賞口
+let isSpinning = false;
+let stopResolvers = [null, null, null];
+
+// 釘の生成（幾何学的に配置）
+for (let r = 0; r < 9; r++) {
+    const cols = (r % 2 === 0) ? 8 : 9;
+    const offsetX = (r % 2 === 0) ? 40 : 18;
+    for (let c = 0; c < cols; c++) {
+        pins.push({ x: offsetX + c * 46, y: 210 + r * 30, r: 3 });
+    }
+}
+
+// --- UIイベント登録 ---
+const powerRange = document.getElementById('powerRange');
+const powerValue = document.getElementById('powerValue');
+
+// 0.1単位の数値表示更新
+powerRange.oninput = () => {
+    powerValue.innerText = parseFloat(powerRange.value).toFixed(1);
+};
+
+document.getElementById('saveBtn').onclick = saveData;
+document.getElementById('resetBtn').onclick = resetData;
+
+document.getElementById('shootBtn').onclick = () => {
+    if (coins <= 0) return alert("玉がありません！リセットしてください。");
+    coins--;
+    updateUI();
+    const p = parseFloat(powerRange.value);
+    // 右下発射口から射出
+    balls.push({ 
+        x: 385, 
+        y: 485, 
+        vx: -(p * 0.42), // パワーに応じた横速度
+        vy: -p,          // パワーに応じた縦速度
+        r: 6 
+    });
+};
+
+const stopBtns = [
+    document.getElementById('stop1'),
+    document.getElementById('stop2'),
+    document.getElementById('stop3')
+];
+
+stopBtns.forEach((btn, i) => {
+    btn.onclick = () => {
+        if (stopResolvers[i]) {
+            stopResolvers[i]();
+            btn.disabled = true;
+        }
+    };
+});
+
+// --- スロットロジック ---
+async function startSlot() {
+    if (isSpinning) return;
+    isSpinning = true;
+    const statusEl = document.getElementById('status');
+    statusEl.innerText = "CHANCE!";
+    statusEl.style.color = "#ffeb3b";
+    
+    const reels = [
+        document.getElementById('r1'), 
+        document.getElementById('r2'), 
+        document.getElementById('r3')
+    ];
+    
+    // 15%の確率で当たり判定
+    const isWin = Math.random() < 0.15;
+    const winNum = Math.floor(Math.random() * 10); // 当たり時の数字
+
+    // 回転開始
+    const intervals = reels.map((el, i) => {
+        stopBtns[i].disabled = false;
+        return setInterval(() => {
+            el.innerText = Math.floor(Math.random() * 10);
+        }, 50);
+    });
+
+    // 各ボタンの停止を待機
+    for (let i = 0; i < 3; i++) {
+        await new Promise(res => stopResolvers[i] = res);
+        clearInterval(intervals[i]);
+        
+        if (isWin) {
+            reels[i].innerText = "7"; // 当たりフラグ時は7固定（お好みでwinNumに）
+        } else if (i === 2 && reels[0].innerText === reels[1].innerText) {
+            // リーチ時のハズレ演出
+            let finalNum = Math.floor(Math.random() * 10);
+            while(finalNum == reels[0].innerText) finalNum = (finalNum + 1) % 10;
+            reels[2].innerText = finalNum;
+        }
+    }
+
+    // 判定
+    if (reels[0].innerText === reels[1].innerText && reels[1].innerText === reels[2].innerText) {
+        statusEl.innerText = "✨FEVER!!✨";
+        document.getElementById('lcd').classList.add('win-flash');
+        coins += 250;
+        updateUI();
+        setTimeout(() => {
+            document.getElementById('lcd').classList.remove('win-flash');
+            statusEl.innerText = "READY";
+            statusEl.style.color = "#0f0";
+            isSpinning = false;
+        }, 3000);
+    } else {
+        statusEl.innerText = "RETRY";
+        setTimeout(() => {
+            statusEl.innerText = "READY";
+            statusEl.style.color = "#0f0";
+            isSpinning = false;
+        }, 1000);
+    }
+}
+
+// --- メインループ（物理演算と描画） ---
+function loop() {
+    ctx.clearRect(0, 0, 400, 500);
+
+    // 入賞口の描画
+    ctx.fillStyle = '#ff1744';
+    ctx.beginPath(); ctx.arc(hole.x, hole.y, hole.r, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = "bold 12px Arial"; ctx.fillText("PUSH", 184, 445);
+
+    // 釘の描画
+    ctx.fillStyle = '#777';
+    pins.forEach(p => {
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI*2); ctx.fill();
+    });
+
+    // 玉の挙動計算
+    ctx.fillStyle = '#eee';
+    for (let i = balls.length - 1; i >= 0; i--) {
+        let b = balls[i];
+        
+        // 物理更新
+        b.vy += 0.35; // 重力
+        b.x += b.vx;
+        b.y += b.vy;
+
+        // 壁反射（左右・天井）
+        if (b.x < 10 || b.x > 390) b.vx *= -0.5;
+        if (b.y < 10) b.vy *= -0.5;
+
+        // 釘との衝突判定
+        pins.forEach(p => {
+            const dx = b.x - p.x;
+            const dy = b.y - p.y;
+            const dist = Math.sqrt(dx*dx + dy*dy);
+            if (dist < b.r + p.r) {
+                const angle = Math.atan2(dy, dx);
+                const speed = 4.2; // 反射の勢い
+                b.vx = Math.cos(angle) * speed;
+                b.vy = Math.sin(angle) * speed;
+            }
+        });
+
+        // 入賞判定
+        const distHole = Math.sqrt((b.x - hole.x)**2 + (b.y - hole.y)**2);
+        if (distHole < hole.r) {
+            balls.splice(i, 1);
+            startSlot();
+            continue;
+        }
+
+        // 描画
+        ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI*2); ctx.fill();
+
+        // 画面外（下）に消えたら削除
+        if (b.y > 550) balls.splice(i, 1);
+    }
+
+    requestAnimationFrame(loop);
+}
+
+// 開始
+loadData();
+loop();
+</script>
+</body>
+</html>
